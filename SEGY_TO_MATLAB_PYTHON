@@ -1,0 +1,115 @@
+# -*- coding: utf-8 -*-
+"""
+Spyder Editor
+
+This is a temporary script file.
+"""
+
+import scipy.io as sio 
+import numpy
+import struct
+import json
+import matplotlib.pyplot as plt
+import os
+from numba import vectorize, float32, uint64
+
+# input
+filename = 'Baseline_009_F0066_G20190615_002742.491+0000_0000.sgy'
+# output for use in python
+fileout = 'Baseline_009_F0066_G20190615_002742.491+0000_0000.sgy'
+# output for use in matlab
+filemat = 'Baseline_009_F0066_G20190615_002742.491+0000_0000.sgy'
+
+
+# the old-school IBM floats... just convert to the modern ieee format
+# this snippet is from https://stackoverflow.com/questions/7125890/python-unpack-ibm-32-bit-float-point
+@vectorize([float32(uint64)])
+def ibm2ieee(ibm):
+    """
+    Converts an IBM floating point number into IEEE format.
+    :param: ibm - 32 bit unsigned integer: unpack('>L', f.read(4))
+    """
+    if ibm == 0:
+        return 0.0
+    sign = ibm >> 31 & 0x01 #Returns ibm with bits shifted to the left by 31 places
+    exponent = ibm >> 24 & 0x7f
+    mantissa = (ibm & 0x00ffffff) / float(pow(2, 23))
+    return (1 - 2 * sign) * mantissa * pow(8, exponent - 64)
+
+
+#####################################
+# READ HEADER                       #
+#####################################
+# Extract the minimum from the header
+rawObj = open(filename,'rb')
+try:
+    ASCII_LINE=80
+    rawObj.seek(ASCII_LINE*4,os.SEEK_SET)
+    byte80Part=rawObj.read(80)
+    # number of traces
+    fields = byte80Part.split()
+    nx = int(fields[2])
+    byte80Part=rawObj.read(80)
+    # The PRF and the samples per trace
+    fields = byte80Part.decode('utf8').split()
+    fields2 = fields[6].split('.')
+    prf = int(1000000.0/int(fields[4]))
+    nt = int(fields2[0])
+    print('nx=',nx)
+    print('prf=',prf)
+    print('nt=',nt)
+finally:
+    rawObj.close()
+
+#####################################
+# ALLOCATE MEMORY                   #
+#####################################
+# allocate memory for the whole file
+# TIP: for very large arrays consider
+#   memmap() or https://dask.org/
+#   for more scalable solutions
+data = numpy.zeros((nx,int(nt)),dtype='float32')
+
+#####################################
+# LOAD WAVEFORMS                    #
+#####################################
+#read traces, convert to ieee floats and store
+SAMPLE_TYPE = list(">f")
+SAMPLE_TYPE[1]='L'
+sample_type = "".join(SAMPLE_TYPE)
+BYTES = 4
+rawObj=open(filename,'rb')
+try:
+    # SEGY 3200 byte text header
+    # 400 byte binary header
+    ASCII_HEADER = 3200
+    BINARY_HEADER = 400
+    TRACE_HEADER = 240
+    FLOAT_SIZE = 12
+
+    nvals = nt
+    end_of_trace = 0
+
+    rawObj.seek(ASCII_HEADER+BINARY_HEADER,os.SEEK_SET)
+    for a in range(0,nx):
+        print(a)
+        rawObj.seek(TRACE_HEADER,os.SEEK_CUR)
+        traceBytes = rawObj.read(nvals*BYTES)
+        trace=numpy.frombuffer(traceBytes,dtype=sample_type)
+        trace = ibm2ieee(trace)
+        print(data.size)
+        print(data.ndim)
+        data[a,:] = trace
+        rawObj.seek(end_of_trace,os.SEEK_CUR)
+finally:
+    rawObj.close()
+
+
+#####################################
+# EXPORT                            #
+#####################################
+# save as a numpy file for quick access
+numpy.save(fileout, data)
+# or for use in matlab...
+import scipy.io as sio 
+sio.savemat(filemat,{'name': filename, 'nx' : nx, 'nt' : nt, 'prf' : prf, 'data' : data})
